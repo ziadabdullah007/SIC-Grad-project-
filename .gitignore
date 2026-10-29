@@ -1,0 +1,15 @@
+.venv/
+**/.venv/
+node_modules/
+**/node_modules/
+__pycache__/
+.pytest_cache/
+.env
+**/.env
+*.pyc
+frontend/dist/
+output/
+
+data/unified_server_telemetry.csv
+
+data/unified_server_telemetry.csv

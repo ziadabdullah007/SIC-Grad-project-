@@ -1,0 +1,2 @@
+model_id,workload_name,model_size,image_size,batch_size
+M001,Image Generation Diffusion Models,128,32,128

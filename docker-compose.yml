@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
+    environment:
+      - CORS_ORIGINS=http://localhost:5173
+      - DATA_DIR=/app/data
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-mini}
+    volumes:
+      - ./data:/app/data:ro
+  frontend:
+    build: ./frontend
+    ports: ["5173:5173"]
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    depends_on: [backend]
