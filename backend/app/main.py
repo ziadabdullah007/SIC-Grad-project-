@@ -8,7 +8,16 @@ from .data_service import telemetry_available, telemetry_summary
 from .reporting import make_report, llm_status
 
 app=FastAPI(title="DC Risk Lab API",version="0.2.0",description="Rule-based data-center risk assessment using precomputed historical baselines and hardware specifications. No ML model is used for risk classification.")
-app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    # Local Vite dev servers may be opened on localhost OR 127.0.0.1.
+    # Allow either host on any local development port to avoid browser CORS blocks.
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 def health():
