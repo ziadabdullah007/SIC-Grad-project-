@@ -3,9 +3,7 @@ import os
 import json
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data")))
-BASELINES_PATH = DATA_DIR / "processed_baselines.json"
+BASELINES_PATH = Path(__file__).resolve().parent / "processed_baselines.json"
 
 def telemetry_available():
     return BASELINES_PATH.is_file()
