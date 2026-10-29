@@ -1,20 +1,16 @@
-"""Precompute compact telemetry artifacts locally before deploying without the raw CSV.
+"""Compute historical normal-range baselines locally from the raw CSV.
 
-Usage (from repository root):
-  python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv
+The raw CSV and timestamps are not copied into deployment artifacts.
+Output: data/processed_baselines.json
 
-Outputs:
-  data/processed_baselines.json  - per-server metric statistics (mean, median, P10/P90)
-  data/telemetry_1min.csv        - one-minute per-server means for trend analytics
-
-The original input is read-only and is never copied into these outputs.
+Usage from repository root:
+  python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output data/processed_baselines.json
 """
 from __future__ import annotations
-import argparse, csv, json, math
+import argparse, csv, json, math, struct, tempfile
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
-from statistics import mean
+import numpy as np
 
 METRICS = {
     "gpu_utilization_avg_pct": ("GPU utilization", "%", "higher_is_not_inherently_worse"),
@@ -34,103 +30,109 @@ METRICS = {
     "coolant_flow_rate": ("Coolant flow rate", "dataset unit", "lower_is_worse"),
 }
 ALIASES = {
-    "timestamp": ["timestamp", "datetime", "time_stamp"], "server_id": ["server_id", "server", "node_id"],
+    "server_id": ["server_id", "server", "node_id"],
     "gpu_utilization_avg_pct": ["gpu_utilization_avg_pct", "gpu_utilization_pct", "gpu_utilization"],
     "gpu_power_total_W": ["gpu_power_total_W", "gpu_power_w", "gpu_power_total_w"],
-    "gpu_memory_used_total_MB": ["gpu_memory_used_total_MB", "gpu_memory_used_mb"],
     "gpu_temp_max_C": ["gpu_temp_max_C", "gpu_temperature_c", "gpu_temp_c"],
+    "gpu_memory_used_total_MB": ["gpu_memory_used_total_MB", "gpu_memory_used_mb"],
     "cpu_utilization_percent": ["cpu_utilization_percent", "cpu_utilization_pct"],
-    "cpu_power_W": ["cpu_power_W", "cpu_power_w"], "cpu_temp_C": ["cpu_temp_C", "cpu_temperature_c"],
-    "ambient_temp_C": ["ambient_temp_C", "ambient_temperature_c"], "inlet_temp_C": ["inlet_temp_C", "inlet_temperature_c"],
-    "exhaust_temp_C": ["exhaust_temp_C", "exhaust_temperature_c"], "humidity_pct": ["humidity_pct", "humidity_percent"],
-    "cooling_power_W": ["cooling_power_W", "cooling_power_w"], "fan_speed_RPM": ["fan_speed_RPM", "fan_speed_rpm"],
-    "airflow_CFM": ["airflow_CFM", "airflow_cfm"], "coolant_temp_C": ["coolant_temp_C", "coolant_temperature_c"],
+    "cpu_temp_C": ["cpu_temp_C", "cpu_temperature_c"],
+    "ambient_temp_C": ["ambient_temp_C", "ambient_temperature_c"],
+    "inlet_temp_C": ["inlet_temp_C", "inlet_temperature_c"],
+    "exhaust_temp_C": ["exhaust_temp_C", "exhaust_temperature_c"],
+    "humidity_pct": ["humidity_pct", "humidity_percent"],
+    "cooling_power_W": ["cooling_power_W", "cooling_power_w"],
+    "fan_speed_RPM": ["fan_speed_RPM", "fan_speed_rpm"],
+    "airflow_CFM": ["airflow_CFM", "airflow_cfm"],
+    "coolant_temp_C": ["coolant_temp_C", "coolant_temperature_c"],
     "coolant_flow_rate": ["coolant_flow_rate", "coolant_flow"],
 }
 
-def number(v):
+def number(value):
     try:
-        if v is None or str(v).strip() == "": return None
-        n=float(v)
-        return n if math.isfinite(n) else None
-    except (ValueError, TypeError): return None
-
-def quantile(sorted_values, q):
-    pos=(len(sorted_values)-1)*q; lo=int(pos); hi=min(lo+1,len(sorted_values)-1); frac=pos-lo
-    return sorted_values[lo]*(1-frac)+sorted_values[hi]*frac
-
-def parse_ts(v):
-    try: return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except (ValueError, TypeError): return None
+        if value is None or str(value).strip() == "": return None
+        value = float(value)
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument("--input", default="data/unified_server_telemetry.csv")
-    ap.add_argument("--output-dir", default="data")
-    ap.add_argument("--bucket-seconds", type=int, default=60)
-    args=ap.parse_args()
-    src=Path(args.input); out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True)
-    if not src.is_file(): raise SystemExit(f"Input CSV not found: {src}")
-    if args.bucket_seconds < 1: raise SystemExit("--bucket-seconds must be >= 1")
-    values=defaultdict(list)
-    # Key is (server, bucket ISO timestamp); aggregate is bounded by number of minute buckets.
-    buckets={}; total_rows=0; valid_ts=0; server_ids=set()
-    with src.open("r",encoding="utf-8-sig",newline="") as f:
-        reader=csv.DictReader(f)
-        if not reader.fieldnames: raise SystemExit("CSV has no header row")
-        fieldmap={str(k).strip().lower(): k for k in reader.fieldnames if k}
-        def get(row, canonical):
-            for alias in ALIASES.get(canonical,[canonical]):
-                original=fieldmap.get(alias.lower())
-                if original is not None: return row.get(original)
-            return None
-        for row in reader:
-            total_rows += 1
-            sid=str(get(row,"server_id") or "").strip()
-            if not sid: continue
-            server_ids.add(sid)
-            timestamp=get(row,"timestamp"); dt=parse_ts(timestamp)
-            metric_values={m:number(get(row,m)) for m in METRICS}
-            for metric,val in metric_values.items():
-                if val is not None: values[(sid,metric)].append(val)
-            if dt is None: continue
-            valid_ts += 1
-            epoch=dt.timestamp(); bucket_epoch=int(epoch//args.bucket_seconds)*args.bucket_seconds
-            bucket_dt=datetime.fromtimestamp(bucket_epoch,dt.tzinfo)
-            bucket_ts=bucket_dt.isoformat()
-            key=(sid,bucket_ts)
-            agg=buckets.get(key)
-            if agg is None:
-                agg={"timestamp":bucket_ts,"server_id":sid,"_sum":defaultdict(float),"_count":defaultdict(int)}
-                buckets[key]=agg
-            for metric,val in metric_values.items():
-                if val is not None:
-                    agg["_sum"][metric]+=val; agg["_count"][metric]+=1
-    baselines={"format_version":1,"source_file":src.name,"source_rows":total_rows,"timestamped_rows":valid_ts,"bucket_seconds":args.bucket_seconds,"servers":{}}
-    for sid in sorted(server_ids):
-        profiles=[]
-        for metric,(label,unit,direction) in METRICS.items():
-            vals=values.get((sid,metric),[])
-            if len(vals)<10: continue
-            vals.sort()
-            profiles.append({"metric":metric,"label":label,"unit":unit,"sample_count":len(vals),"average":round(mean(vals),3),"median":round(quantile(vals,.5),3),"normal_min":round(quantile(vals,.1),3),"normal_max":round(quantile(vals,.9),3),"warning_below":None,"warning_above":None,"critical_below":None,"critical_above":None,"direction":direction,"rule_method":"Historical descriptive baseline computed locally from raw CSV: average and P10-P90; vendor limits evaluated separately","rule_type":"data_relative_baseline"})
-        baselines["servers"][sid]=profiles
-    baseline_path=out/"processed_baselines.json"
-    baseline_path.write_text(json.dumps(baselines,ensure_ascii=False,separators=(",",":")),encoding="utf-8")
-    compact_path=out/"telemetry_1min.csv"
-    fields=["timestamp","server_id",*ALIASES.keys()]
-    fields=list(dict.fromkeys(fields))
-    with compact_path.open("w",encoding="utf-8",newline="") as f:
-        writer=csv.DictWriter(f,fieldnames=fields); writer.writeheader()
-        for (sid,ts),agg in sorted(buckets.items(),key=lambda x:(x[0][0],x[0][1])):
-            row={"timestamp":ts,"server_id":sid}
-            for metric in ALIASES:
-                if metric in ("timestamp","server_id"): continue
-                count=agg["_count"].get(metric,0)
-                row[metric]=round(agg["_sum"][metric]/count,6) if count else ""
-            writer.writerow(row)
-    print(f"Input rows: {total_rows:,}; timestamped rows: {valid_ts:,}; servers: {len(server_ids)}")
-    print(f"Wrote baselines: {baseline_path} ({baseline_path.stat().st_size:,} bytes)")
-    print(f"Wrote compact time series: {compact_path} ({compact_path.stat().st_size:,} bytes; {len(buckets):,} server-minute buckets)")
-    print("Keep the raw CSV local. Commit only these two generated artifacts if their combined size is within GitHub's limits.")
-if __name__=="__main__": main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="data/unified_server_telemetry.csv")
+    parser.add_argument("--output", default="data/processed_baselines.json")
+    parser.add_argument("--min-samples", type=int, default=10)
+    args = parser.parse_args()
+    source, output = Path(args.input), Path(args.output)
+    if not source.is_file(): raise SystemExit(f"Input CSV not found: {source}")
+    if args.min_samples < 1: raise SystemExit("--min-samples must be >= 1")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Disk-backed per-server/metric binary files avoid retaining millions of Python floats.
+    counts, sums, servers = defaultdict(int), defaultdict(float), set()
+    total_rows = 0
+    with tempfile.TemporaryDirectory(prefix="dc-risk-baselines-") as temp_dir:
+        temp_path = Path(temp_dir)
+        handles = {}
+        try:
+            with source.open("r", encoding="utf-8-sig", newline="") as file:
+                reader = csv.DictReader(file)
+                if not reader.fieldnames: raise SystemExit("CSV has no header row")
+                field_map = {str(name).strip().lower(): name for name in reader.fieldnames if name}
+                columns = {}
+                for key, aliases in ALIASES.items():
+                    columns[key] = next((field_map[a.lower()] for a in aliases if a.lower() in field_map), None)
+                if not columns["server_id"]: raise SystemExit("CSV is missing server_id (or known alias)")
+                for row in reader:
+                    total_rows += 1
+                    sid = str(row.get(columns["server_id"]) or "").strip()
+                    if not sid: continue
+                    servers.add(sid)
+                    for metric in METRICS:
+                        col = columns.get(metric)
+                        value = number(row.get(col)) if col else None
+                        if value is None: continue
+                        key = (sid, metric)
+                        handle = handles.get(key)
+                        if handle is None:
+                            safe_sid = "".join(ch if ch.isalnum() else "_" for ch in sid)
+                            handle = (temp_path / f"{safe_sid}__{metric}.bin").open("ab")
+                            handles[key] = handle
+                        handle.write(struct.pack("d", value))
+                        counts[key] += 1
+                        sums[key] += value
+                    if total_rows % 250000 == 0:
+                        print(f"Read {total_rows:,} rows; servers found: {len(servers)}", flush=True)
+        finally:
+            for handle in handles.values(): handle.close()
+
+        baseline = {"format_version": 2, "source_file": source.name,
+                    "source_rows": total_rows,
+                    "normal_range": "P10-P90 from all valid numeric historical readings per server and metric",
+                    "servers": {}}
+        for sid in sorted(servers):
+            profiles = []
+            for metric, (label, unit, direction) in METRICS.items():
+                key = (sid, metric); count = counts[key]
+                if count < args.min_samples: continue
+                safe_sid = "".join(ch if ch.isalnum() else "_" for ch in sid)
+                values = np.fromfile(temp_path / f"{safe_sid}__{metric}.bin", dtype=np.float64)
+                if not len(values): continue
+                p10, p50, p90 = np.quantile(values, [0.10, 0.50, 0.90], method="linear")
+                profiles.append({"metric": metric, "label": label, "unit": unit,
+                    "sample_count": int(count), "average": round(sums[key] / count, 6),
+                    "median": round(float(p50), 6), "normal_min": round(float(p10), 6),
+                    "normal_max": round(float(p90), 6), "warning_below": None,
+                    "warning_above": None, "critical_below": None, "critical_above": None,
+                    "direction": direction,
+                    "rule_method": "Computed locally from all valid raw CSV readings; normal range is P10-P90; hardware limits are evaluated separately",
+                    "rule_type": "data_relative_baseline"})
+                del values
+            baseline["servers"][sid] = profiles
+        temp_output = output.with_suffix(output.suffix + ".tmp")
+        temp_output.write_text(json.dumps(baseline, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temp_output.replace(output)
+    print(f"Input rows processed: {total_rows:,}; servers: {len(servers)}")
+    print(f"Wrote baselines: {output} ({output.stat().st_size:,} bytes)")
+    print("No timestamps or raw rows were copied to the output. Keep the original CSV local; commit only processed_baselines.json.")
+
+if __name__ == "__main__": main()

@@ -8,11 +8,11 @@ def scenario():
         "cpu_utilization_percent":40,"cpu_power_W":120,"cpu_temp_C":55,"ambient_temp_C":23,
         "inlet_temp_C":25,"exhaust_temp_C":45,"humidity_pct":45,"cooling_power_W":500,
         "fan_speed_RPM":2800,"airflow_CFM":250,"coolant_temp_C":28,"coolant_flow_rate":2.5,
-        "duration_minutes":15}
+        }
 
 def test_health():
     response=client.get('/health'); assert response.status_code==200
-    assert response.json()['analysis_mode']=='rules_and_telemetry_analytics'
+    assert response.json()['analysis_mode']=='precomputed_baselines_and_hardware_rules'
     assert response.json()['ml_enabled'] is False
 
 def test_server_list(): assert len(client.get('/api/servers').json())==5
@@ -21,14 +21,11 @@ def test_analysis_no_ml():
     response=client.post('/api/analyze',json={"scenario":scenario(),"use_llm_report":False})
     assert response.status_code==200
     data=response.json()
-    assert 'findings' in data and 'telemetry_analytics' in data
+    assert 'findings' in data and 'data_rule_results' in data and 'telemetry_analytics' not in data
     assert len(data['comparisons']) >= 3
     assert any(c['metric'] == 'gpu_power_per_gpu_W' and c['limit'] == 700 for c in data['comparisons'])
     assert data['spec_sources']
     assert 'anomaly_score' not in data
-
-def test_analytics_unknown_server():
-    assert client.get('/api/servers/UNKNOWN/analytics').status_code==404
 
 def test_vendor_power_comparison_flags_above_catalogued_limit():
     payload = scenario()
@@ -49,20 +46,21 @@ def test_thermal_comparison_is_not_guessed_without_device_limit():
     assert thermal
     assert all(item['status'] == 'not_evaluated' for item in thermal)
 
-def test_data_driven_baseline_uses_historical_average_and_percentiles(monkeypatch):
+def test_data_driven_baseline_uses_precomputed_historical_percentiles(monkeypatch):
     import app.analysis as analysis
-    def fake_values(server_id, metric):
-        if metric == 'gpu_temp_max_C':
-            return [float(x) for x in range(20, 120)]
-        return []
-    monkeypatch.setattr(analysis, 'read_metric_values', fake_values)
+    profile = {"metric":"gpu_temp_max_C", "label":"GPU temperature", "unit":"°C",
+        "sample_count":100, "average":69.5, "median":69.5, "normal_min":29.9,
+        "normal_max":109.1, "warning_below":None, "warning_above":None,
+        "critical_below":None, "critical_above":None, "direction":"higher_is_worse",
+        "rule_method":"Computed locally from all valid raw CSV readings", "rule_type":"data_relative_baseline"}
+    monkeypatch.setattr(analysis, 'read_precomputed_baselines', lambda server_id: [profile])
     result = analysis.analyze(scenario())
-    profile = next(x for x in result['data_driven_thresholds'] if x['metric'] == 'gpu_temp_max_C')
     rule = next(x for x in result['data_rule_results'] if x['metric'] == 'gpu_temp_max_C')
-    assert profile['sample_count'] == 100
-    assert profile['average'] == 69.5
-    assert profile['normal_min'] < profile['normal_max']
-    assert rule['status'] in {'normal', 'warning', 'critical'}
+    assert rule['sample_count'] == 100
+    assert rule['average'] == 69.5
+    assert rule['normal_min'] < rule['normal_max']
+    assert rule['status'] in {'normal', 'outside_normal'}
+    assert 'telemetry_analytics' not in result
 
 
 def test_power_warning_estimate_is_explicitly_not_vendor_official():

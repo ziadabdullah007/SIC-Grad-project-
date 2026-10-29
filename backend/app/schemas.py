@@ -19,7 +19,6 @@ class Scenario(BaseModel):
     airflow_CFM:float=Field(ge=0)
     coolant_temp_C:float=Field(ge=-20,le=150)
     coolant_flow_rate:float=Field(ge=0)
-    duration_minutes:int=Field(default=10,ge=1,le=1440)
 class ThresholdOverrides(BaseModel):
     gpu_temp_warning_C:float|None=Field(default=None,ge=0,le=120)
     gpu_temp_critical_C:float|None=Field(default=None,ge=0,le=130)

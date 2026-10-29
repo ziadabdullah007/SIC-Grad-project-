@@ -1,16 +1,22 @@
 
 
-## Data-derived normal / warning / critical bands
+## Historical Normal ranges and hardware rules
 
-The backend reads historical values for each server and metric from `data/unified_server_telemetry.csv` without modifying the source file. For every metric with at least 10 valid observations it calculates the historical average and median and defines the descriptive normal band as P10–P90. Values outside this band are marked only as outside the historical normal range; P1/P99 do not assign warning or critical severity. Warning/critical findings are based on applicable manufacturer-defined limits where published. If a vendor publishes only a maximum/capacity and no warning band, the app reports the documented limit and does not invent a manufacturer warning threshold. The Risk Assessment page shows average, normal range, scenario value, historical status, and sample count. If no matching historical rows exist, data-derived ranges are shown as unavailable rather than fabricated.
+The original multi-GB `unified_server_telemetry.csv` is used locally only. Run the preprocessing script once to calculate per-server, per-metric sample counts, averages, medians, and P10-P90 from all valid numeric readings. Only `data/processed_baselines.json` is deployed. Timestamps and row-level readings are not used by the deployed application.
 
-## Connect your real telemetry CSV
+P10-P90 describes historical normal behavior only; being outside that range is not automatically a Warning or Critical event. Warning/Critical checks use applicable documented hardware specifications. Where a manufacturer publishes a maximum but no warning band, any project estimate is explicitly labelled as an estimate, not a vendor limit. Unknown thermal limits remain unevaluated rather than using invented universal temperatures.
 
-1. Export the telemetry table from Microsoft Fabric Lakehouse as a CSV. This prototype reads a local CSV file; it does **not** connect directly to Fabric or query OneLake yet.
-2. Put the export at `data/unified_server_telemetry.csv` (replace only the file in your local project folder; keep a separate copy of the raw source). The app opens it read-only.
-3. Required columns: `server_id` and at least one metric the app analyzes. Recommended columns are `timestamp`, `server_id`, `gpu_utilization_avg_pct`, `gpu_power_total_W`, `gpu_memory_used_total_MB`, `gpu_memory_total_MB`, `gpu_temp_max_C`, `cpu_utilization_percent`, `cpu_power_W`, `cpu_temp_C`, `ambient_temp_C`, `inlet_temp_C`, `exhaust_temp_C`, `humidity_pct`, `cooling_power_W`, `fan_speed_RPM`, `airflow_CFM`, `coolant_temp_C`, `coolant_flow_rate`. The loader supports several aliases; see `backend/app/data_service.py`.
-4. `server_id` values in the CSV must match catalog IDs `S001` through `S005`; otherwise select the matching ID in `backend/app/servers.py` and keep the source data untouched.
-5. Restart the backend after changing the CSV. Check `http://localhost:8000/health` and `http://localhost:8000/api/servers/S004/telemetry` to confirm data is visible. The API returns a bounded recent sample; the historical-baseline calculation scans all valid values for the selected server/metric.
+## Prepare the historical baselines locally
+
+Place the raw CSV at `data/unified_server_telemetry.csv` on your own machine. It is git-ignored and should not be committed. From the repository root run:
+
+```powershell
+python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output data/processed_baselines.json
+```
+
+The script processes every valid numeric reading, prints progress, and creates only `processed_baselines.json`. It deliberately does not produce a minute-level series or preserve timestamps. Commit the generated JSON after checking its size; do not commit the raw CSV. The deployed backend requires the JSON and does not read or need the raw CSV at runtime.
+
+If the JSON is missing, historical ranges will be unavailable; the application will not silently calculate them from made-up values or require the raw CSV on Render.
 
 ## Run the local LLM (Ollama) or OpenAI
 
@@ -47,16 +53,16 @@ For Docker, `localhost:11434` inside the backend container points to the contain
 
 ## What the LLM does (and does not do)
 
-The backend calculates telemetry statistics and applies manufacturer/catalog rules first. The LLM receives that structured evidence and writes an explanation; it does not calculate authoritative thresholds, change source data, or diagnose a hardware failure. If the API/model is unavailable, the application still returns a deterministic report and labels the report source accordingly.
+The backend loads precomputed historical statistics and applies manufacturer/catalog rules first. The LLM receives that structured evidence and writes an explanation; it does not calculate authoritative thresholds, change source data, or diagnose a hardware failure. If the API/model is unavailable, the application still returns a deterministic report and labels the report source accordingly.
 
 ## Deploy to Render (GitHub repository)
 
 A starter `render.yaml` is included for the API and frontend. Before deploying:
 
-1. Commit `data/unified_server_telemetry.csv` at the repository root if it is safe and permitted to publish. The backend resolves the default path from the repository root, even though Render's service root directory is `backend`.
+1. Generate `data/processed_baselines.json` locally and commit that JSON only. Do not commit the raw CSV.
 2. Push the repository to GitHub and create a new Render Blueprint from that repository.
 3. In the API service environment, set `OPENAI_API_KEY` to your provider's key. Never put the real key in GitHub or `render.yaml`. If Render assigns a different frontend/backend hostname, update `CORS_ORIGINS` on the API and `VITE_API_BASE_URL` on the static site to match. `VITE_API_BASE_URL` is read at build time, so trigger a frontend redeploy after changing it.
-4. Confirm `https://<api-host>/health` reports `telemetry_csv_available: true`, then check `/api/llm/status`. That endpoint confirms configuration only; run an analysis and confirm `report_source` is `openai_llm` to prove the provider call succeeded.
+4. Confirm `https://<api-host>/health` reports `historical_baselines_available: true`, then check `/api/llm/status`. That endpoint confirms configuration only; run an analysis and confirm `report_source` is `openai_llm` to prove the provider call succeeded.
 5. Free-tier LLM quotas and Render service limits can change. If the provider is unavailable, `report_source` explicitly identifies the deterministic fallback.
 
 The `90% of vendor maximum` GPU power warning is an engineering estimate, not an official vendor warning threshold. Critical power status is reserved for exceeding the catalogued manufacturer maximum. Generic GPU temperature is not assigned invented universal limits; exact vendor/device telemetry is required. Historical Normal remains per-server P10–P90.
@@ -69,6 +75,6 @@ The multi-GB `data/unified_server_telemetry.csv` is a local input and is git-ign
 python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output-dir data
 ```
 
-This produces `data/processed_baselines.json` (historical statistics computed from the full-resolution data for each server and metric) and `data/telemetry_1min.csv` (one-minute timestamped averages for trend analysis). Commit these compact artifacts, not the raw CSV. When both artifacts are present, the backend uses them at runtime and does not need the raw file. The minute-level series is for trend analysis; baseline quantiles are calculated from all valid raw rows. Check the generated files' sizes before pushing to GitHub.
+This produces `data/processed_baselines.json` (historical statistics computed from the full-resolution data for each server and metric) and `data/processed_baselines.json` (one-minute timestamped averages for trend analysis). Commit these compact artifacts, not the raw CSV. When both artifacts are present, the backend uses them at runtime and does not need the raw file. The minute-level series is for trend analysis; baseline quantiles are calculated from all valid raw rows. Check the generated files' sizes before pushing to GitHub.
 
 Historical Normal ranges use average and P10–P90. Warning/Critical classifications remain separate and require vendor-documented limits or clearly labeled project engineering estimates; missing vendor thresholds must remain unevaluated rather than invented.

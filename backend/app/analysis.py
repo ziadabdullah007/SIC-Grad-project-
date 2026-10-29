@@ -1,6 +1,6 @@
-from statistics import mean, pstdev
+from statistics import mean
 from .servers import SERVERS
-from .data_service import read_rows, read_metric_values, read_precomputed_baselines
+from .data_service import read_precomputed_baselines
 
 METRIC_LABELS = {
     "gpu_temp_max_C":"GPU temperature", "gpu_power_total_W":"Total GPU power",
@@ -12,31 +12,6 @@ METRIC_LABELS = {
 def _num(x):
     try: return float(x)
     except (TypeError,ValueError): return None
-
-def telemetry_analytics(server_id, window_minutes=10):
-    rows=read_rows(server_id=server_id, limit=2000)
-    rows=[r for r in rows if r.get("timestamp")]
-    if not rows:
-        return {"available":False,"server_id":server_id,"window_minutes":window_minutes,"observations":[],"message":"No usable timestamped telemetry rows found for this server."}
-    from datetime import datetime, timedelta
-    parsed=[]
-    for r in rows:
-        try: parsed.append((datetime.fromisoformat(str(r["timestamp"]).replace("Z","+00:00")),r))
-        except (ValueError,TypeError): pass
-    if parsed:
-        end=max(x[0] for x in parsed); start=end-timedelta(minutes=window_minutes)
-        selected=[r for t,r in parsed if t >= start]
-        selected.sort(key=lambda r: datetime.fromisoformat(str(r["timestamp"]).replace("Z","+00:00")))
-    else: selected=rows[-100:]
-    observations=[]
-    for key,label in METRIC_LABELS.items():
-        values=[_num(r.get(key)) for r in selected]
-        values=[x for x in values if x is not None]
-        if len(values)<2: continue
-        delta=values[-1]-values[0]
-        observations.append({"metric":key,"label":label,"start_value":round(values[0],3),"end_value":round(values[-1],3),"delta":round(delta,3),"mean":round(mean(values),3),"std":round(pstdev(values),3),"sample_count":len(values)})
-    return {"available":bool(observations),"server_id":server_id,"window_minutes":window_minutes,"sample_count":len(selected),"observations":observations,"message":"Computed from timestamped telemetry rows; this is descriptive analytics, not a failure prediction."}
-
 
 DATA_METRICS = {
     "gpu_utilization_avg_pct": ("GPU utilization", "%", "higher_is_not_inherently_worse"),
@@ -56,11 +31,6 @@ DATA_METRICS = {
     "coolant_flow_rate": ("Coolant flow rate", "dataset unit", "lower_is_worse"),
 }
 
-def _quantile(sorted_values, q):
-    if not sorted_values: return None
-    pos=(len(sorted_values)-1)*q
-    lo=int(pos); hi=min(lo+1,len(sorted_values)-1); frac=pos-lo
-    return sorted_values[lo]*(1-frac)+sorted_values[hi]*frac
 
 def data_driven_thresholds(server_id):
     """Calculate historical averages and normal ranges only.
@@ -70,17 +40,10 @@ def data_driven_thresholds(server_id):
     """
     precomputed = read_precomputed_baselines(server_id)
     if precomputed is not None:
-        # Use exact statistics calculated offline from the original full-resolution CSV.
-        # Do not recompute baselines from the downsampled trend file.
+        # Use exact statistics calculated offline from all valid raw CSV readings.
         return precomputed
-    profiles=[]
-    for key,(label,unit,direction) in DATA_METRICS.items():
-        values=read_metric_values(server_id,key)
-        if len(values)<10: continue
-        values.sort()
-        avg=mean(values); p10=_quantile(values,.10); p50=_quantile(values,.50); p90=_quantile(values,.90)
-        profiles.append({"metric":key,"label":label,"unit":unit,"sample_count":len(values),"average":round(avg,3),"median":round(p50,3),"normal_min":round(p10,3),"normal_max":round(p90,3),"warning_below":None,"warning_above":None,"critical_below":None,"critical_above":None,"direction":direction,"rule_method":"Historical descriptive baseline: average and normal P10–P90; vendor limits are evaluated separately","rule_type":"data_relative_baseline"})
-    return profiles
+    # Deployment must use locally precomputed JSON; never require the raw CSV at runtime.
+    return []
 
 def _classify_against_profile(value, profile):
     if value is None: return "not_evaluated"
@@ -161,8 +124,9 @@ def analyze(scenario, overrides=None):
         add("critical","GPU_MEMORY_CAPACITY_EXCEEDED","GPU memory usage exceeds catalogued capacity",f"Reported aggregate use {used_mb:.0f} MB exceeds catalogued nominal capacity {capacity_mb:.0f} MB. Verify units, aggregation, and SKU.","vendor_specification")
 
     # Temperature: apply only if the exact device limit is included in telemetry; don't invent a universal °C cutoff.
-    recent=read_rows(server_id=sid,limit=2000)
-    runtime_limits={key: next((_num(r.get(key)) for r in reversed(recent) if _num(r.get(key)) is not None),None) for key in ("gpu_temp_max_operating_C","gpu_temp_slowdown_C","gpu_temp_shutdown_C")}
+    # Device-reported runtime thermal limits are unavailable in the deployed artifact-only mode.
+    # Do not infer universal temperature thresholds; leave these comparisons unevaluated.
+    runtime_limits={key: None for key in ("gpu_temp_max_operating_C","gpu_temp_slowdown_C","gpu_temp_shutdown_C")}
     for key,label in [("gpu_temp_max_operating_C","GPU max operating temperature"),("gpu_temp_slowdown_C","GPU slowdown temperature"),("gpu_temp_shutdown_C","GPU shutdown temperature")]:
         comparisons.append(_comparison("gpu_temp_max_C vs "+label, _num(scenario.get("gpu_temp_max_C")),runtime_limits[key],"°C",server["spec_sources"][-1],"device_reported_runtime_limit", "Not applied unless the CSV has a matching per-device vendor field. Generic GPU temperature must match the vendor field's sensor semantics."))
     temp_limit=runtime_limits["gpu_temp_slowdown_C"] or runtime_limits["gpu_temp_max_operating_C"]
@@ -170,13 +134,7 @@ def analyze(scenario, overrides=None):
         breaches.append("gpu_temperature_device_reported_limit")
         add("critical","GPU_TEMP_DEVICE_LIMIT","GPU temperature reached a device-reported operating/slowdown limit",f"Observed {scenario['gpu_temp_max_C']:.1f}°C; device-reported limit {temp_limit:.1f}°C. Confirm the CSV sensor is semantically equivalent to the runtime field.","vendor_runtime_telemetry")
 
-    analytics=telemetry_analytics(sid, min(max(int(scenario.get("duration_minutes",10)),1),1440))
-    for obs in analytics.get("observations",[]):
-        if obs["metric"]=="gpu_temp_max_C" and obs["delta"] >= 5:
-            add("review","GPU_TEMP_RISING","GPU temperature increased during the selected window",f"Temperature changed by {obs['delta']:.1f}°C across {obs['sample_count']} samples. Investigate with cooling and workload context.","telemetry_analytics")
-        if obs["metric"]=="coolant_flow_rate" and obs["delta"] < 0:
-            add("review","COOLANT_FLOW_DECREASING","Coolant flow decreased during the selected window",f"Coolant flow changed by {obs['delta']:.3f} in the recorded unit. Verify sensor quality and platform cooling design.","telemetry_analytics")
     overall="critical" if any(x["severity"]=="critical" for x in findings) else ("review" if findings else "no_configured_breach")
     unconfigured=[k for k,v in th.items() if v is None]
-    limitations=["No ML model is used; findings come from manufacturer-sourced limits where available and descriptive telemetry analytics.","GPU power limits are manufacturer specifications for the assumed SKU/form factor; actual device-enforced limits may differ. The 90% power warning point is explicitly an engineering estimate, not a manufacturer-published warning band.","GPU temperature warning/critical limits are only applied when device-reported operating/slowdown/shutdown fields are present and sensor semantics match.","Historical averages and P10–P90 ranges describe observed normal behavior; P1/P99 are not used to label warning or critical.","Where a manufacturer publishes only a maximum/capacity and no warning band, the application reports that limit without inventing a vendor warning threshold.","Telemetry trend findings are investigation signals, not proof of a hardware fault.","The What-if scenario is evaluated as a snapshot; changing one slider does not physically simulate how other metrics respond.","This system does not predict failures or time-to-failure."]
-    return {"server_id":sid,"server_name":server["name"],"overall_status":overall,"threshold_breaches":breaches,"findings":findings,"comparisons":comparisons,"data_driven_thresholds":data_profiles,"data_rule_results":data_rule_results,"baseline_method":"Per-server historical distribution: average and normal=P10–P90 only. Critical severity uses applicable manufacturer limits; power warning at 90% of vendor maximum is explicitly an engineering estimate. Requires at least 10 valid historical samples per metric.","spec_sources":server["spec_sources"],"configuration_notes":server.get("configuration_notes",[]),"telemetry_analytics":analytics,"duration_minutes":scenario.get("duration_minutes",10),"thresholds":th,"unconfigured_thresholds":unconfigured,"limitations":limitations}
+    limitations=["No ML model is used for risk classification; findings come from documented hardware limits and precomputed historical baselines.","GPU power limits are manufacturer specifications for the assumed SKU/form factor; actual device-enforced limits may differ. The 90% power warning point is explicitly an engineering estimate, not a manufacturer-published warning band.","GPU temperature warning/critical limits are only applied when device-reported operating/slowdown/shutdown fields are present and sensor semantics match.","Historical averages and P10–P90 ranges describe observed normal behavior; P1/P99 are not used to label warning or critical.","Where a manufacturer publishes only a maximum/capacity and no warning band, the application reports that limit without inventing a vendor warning threshold.","The What-if scenario is evaluated as a snapshot; changing one slider does not physically simulate how other metrics respond.","This system does not predict failures or time-to-failure."]
+    return {"server_id":sid,"server_name":server["name"],"overall_status":overall,"threshold_breaches":breaches,"findings":findings,"comparisons":comparisons,"data_driven_thresholds":data_profiles,"data_rule_results":data_rule_results,"baseline_method":"Per-server historical distribution: average and normal=P10–P90 only. Critical severity uses applicable manufacturer limits; power warning at 90% of vendor maximum is explicitly an engineering estimate. Requires at least 10 valid historical samples per metric.","spec_sources":server["spec_sources"],"configuration_notes":server.get("configuration_notes",[]),"thresholds":th,"unconfigured_thresholds":unconfigured,"limitations":limitations}

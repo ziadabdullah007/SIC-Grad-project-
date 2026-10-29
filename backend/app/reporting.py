@@ -19,11 +19,7 @@ def template_report(result):
     lines=[f"Risk assessment: {result['server_name']}",f"Overall status: {result['overall_status']}","", "Findings:"]
     if result.get("findings"):
         lines += [f"- [{f['severity']}] {f['title']}: {f['detail']}" for f in result['findings']]
-    else: lines.append("- No configured threshold breach or analytics review signal was identified.")
-    analytics=result.get("telemetry_analytics",{})
-    if analytics.get("observations"):
-        lines += ["",f"Telemetry window: {analytics.get('window_minutes')} minutes; samples: {analytics.get('sample_count',0)}", "Observed changes:"]
-        lines += [f"- {o['label']}: {o['start_value']} -> {o['end_value']} (delta {o['delta']})" for o in analytics['observations']]
+    else: lines.append("- No configured hardware-limit breach was identified. Historical baseline deviations are shown separately.")
     if result.get("data_driven_thresholds"):
         lines += ["", "Historical baselines (descriptive, not vendor limits):"]
         for item in result["data_driven_thresholds"]:
@@ -44,7 +40,7 @@ def template_report(result):
     return "\n".join(lines)
 
 def _payload(result):
-    keys=["server_id","server_name","overall_status","findings","comparisons","data_driven_thresholds","data_rule_results","spec_sources","configuration_notes","telemetry_analytics","thresholds","unconfigured_thresholds","limitations"]
+    keys=["server_id","server_name","overall_status","findings","comparisons","data_driven_thresholds","data_rule_results","spec_sources","configuration_notes","thresholds","unconfigured_thresholds","limitations"]
     return {k: result.get(k) for k in keys}
 
 def llm_status():

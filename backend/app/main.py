@@ -3,16 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from .settings import settings
 from .servers import public_servers, SERVERS
 from .schemas import AnalyzeRequest, ScenarioRequest
-from .analysis import analyze, telemetry_analytics
+from .analysis import analyze
 from .data_service import telemetry_available, telemetry_summary
 from .reporting import make_report, llm_status
 
-app=FastAPI(title="DC Risk Lab API",version="0.2.0",description="Rule-based data-center risk assessment and telemetry analytics. No ML model is used.")
+app=FastAPI(title="DC Risk Lab API",version="0.2.0",description="Rule-based data-center risk assessment using precomputed historical baselines and hardware specifications. No ML model is used for risk classification.")
 app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 @app.get("/health")
 def health():
-    return {"status":"ok","telemetry_csv_available":telemetry_available(),"analysis_mode":"rules_and_telemetry_analytics","ml_enabled":False}
+    return {"status":"ok","historical_baselines_available":telemetry_available(),"analysis_mode":"precomputed_baselines_and_hardware_rules","ml_enabled":False}
 
 @app.get("/api/llm/status")
 def get_llm_status(): return llm_status()
@@ -24,12 +24,6 @@ def get_servers(): return public_servers()
 def get_server_telemetry(server_id:str, limit:int=200):
     if server_id not in SERVERS: raise HTTPException(404,"Unknown server_id")
     return telemetry_summary(server_id)
-
-@app.get("/api/servers/{server_id}/analytics")
-def get_server_analytics(server_id:str,window_minutes:int=10):
-    if server_id not in SERVERS: raise HTTPException(404,"Unknown server_id")
-    if not 1<=window_minutes<=1440: raise HTTPException(422,"window_minutes must be between 1 and 1440")
-    return telemetry_analytics(server_id,window_minutes)
 
 @app.post("/api/analyze")
 def analyze_endpoint(request:AnalyzeRequest):
