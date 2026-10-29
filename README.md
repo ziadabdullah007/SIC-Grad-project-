@@ -60,3 +60,15 @@ A starter `render.yaml` is included for the API and frontend. Before deploying:
 5. Free-tier LLM quotas and Render service limits can change. If the provider is unavailable, `report_source` explicitly identifies the deterministic fallback.
 
 The `90% of vendor maximum` GPU power warning is an engineering estimate, not an official vendor warning threshold. Critical power status is reserved for exceeding the catalogued manufacturer maximum. Generic GPU temperature is not assigned invented universal limits; exact vendor/device telemetry is required. Historical Normal remains per-server P10–P90.
+
+## Prepare telemetry for deployment without committing the raw CSV
+
+The multi-GB `data/unified_server_telemetry.csv` is a local input and is git-ignored. Before deploying, run from the repository root:
+
+```bash
+python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output-dir data
+```
+
+This produces `data/processed_baselines.json` (historical statistics computed from the full-resolution data for each server and metric) and `data/telemetry_1min.csv` (one-minute timestamped averages for trend analysis). Commit these compact artifacts, not the raw CSV. When both artifacts are present, the backend uses them at runtime and does not need the raw file. The minute-level series is for trend analysis; baseline quantiles are calculated from all valid raw rows. Check the generated files' sizes before pushing to GitHub.
+
+Historical Normal ranges use average and P10–P90. Warning/Critical classifications remain separate and require vendor-documented limits or clearly labeled project engineering estimates; missing vendor thresholds must remain unevaluated rather than invented.

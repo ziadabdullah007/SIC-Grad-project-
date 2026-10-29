@@ -1,6 +1,6 @@
 from statistics import mean, pstdev
 from .servers import SERVERS
-from .data_service import read_rows, read_metric_values
+from .data_service import read_rows, read_metric_values, read_precomputed_baselines
 
 METRIC_LABELS = {
     "gpu_temp_max_C":"GPU temperature", "gpu_power_total_W":"Total GPU power",
@@ -68,6 +68,11 @@ def data_driven_thresholds(server_id):
     Normal = P10..P90. Warning/critical classifications come from manufacturer
     limits where officially specified, not from historical P1/P99 percentiles.
     """
+    precomputed = read_precomputed_baselines(server_id)
+    if precomputed is not None:
+        # Use exact statistics calculated offline from the original full-resolution CSV.
+        # Do not recompute baselines from the downsampled trend file.
+        return precomputed
     profiles=[]
     for key,(label,unit,direction) in DATA_METRICS.items():
         values=read_metric_values(server_id,key)

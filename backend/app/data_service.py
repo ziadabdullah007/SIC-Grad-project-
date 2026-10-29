@@ -7,6 +7,12 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data")))
 TELEMETRY_PATH = DATA_DIR / "unified_server_telemetry.csv"
+COMPACT_TELEMETRY_PATH = DATA_DIR / "telemetry_1min.csv"
+BASELINES_PATH = DATA_DIR / "processed_baselines.json"
+
+def _active_telemetry_path():
+    """Prefer precomputed one-minute data so production does not need the raw multi-GB CSV."""
+    return COMPACT_TELEMETRY_PATH if COMPACT_TELEMETRY_PATH.is_file() else TELEMETRY_PATH
 
 ALIASES = {
     "timestamp": ["timestamp", "datetime", "time_stamp"],
@@ -49,13 +55,14 @@ def _float(value):
         return float(value)
     except (TypeError, ValueError): return None
 
-def telemetry_available(): return TELEMETRY_PATH.exists()
+def telemetry_available(): return _active_telemetry_path().is_file() or BASELINES_PATH.is_file()
 
 def read_rows(server_id=None, limit=5000):
-    if not TELEMETRY_PATH.exists(): return []
+    source_path = _active_telemetry_path()
+    if not source_path.exists(): return []
     rows=[]
     # Stream the file; keep only the latest bounded sample for the selected server.
-    with TELEMETRY_PATH.open("r", encoding="utf-8-sig", newline="") as f:
+    with source_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader=csv.DictReader(f)
         for raw in reader:
             sid = _value(raw, "server_id")
@@ -83,12 +90,25 @@ def read_rows(server_id=None, limit=5000):
 def telemetry_summary(server_id=None):
     rows=read_rows(server_id=server_id, limit=2000)
     if not rows:
-        return {"available":False,"path":str(TELEMETRY_PATH),"row_count":0,"server_id":server_id,"rows":[],"message":"Telemetry CSV not found or no matching rows. Place unified_server_telemetry.csv in the project data/ folder."}
-    return {"available":True,"path":str(TELEMETRY_PATH),"row_count":len(rows),"server_id":server_id,"rows":rows,"message":"Read-only sample from local CSV; row_count is the returned analysis window, not total file size."}
+        return {"available":False,"path":str(_active_telemetry_path()),"row_count":0,"server_id":server_id,"rows":[],"message":"Telemetry CSV not found or no matching rows. Place unified_server_telemetry.csv in the project data/ folder."}
+    return {"available":True,"path":str(_active_telemetry_path()),"row_count":len(rows),"server_id":server_id,"rows":rows,"message":"Read-only sample from the precomputed one-minute telemetry artifact when available; row_count is the returned analysis window, not total source rows."}
+
+
+def read_precomputed_baselines(server_id):
+    """Return locally precomputed historical profiles, if present."""
+    if not BASELINES_PATH.is_file():
+        return None
+    try:
+        import json
+        payload = json.loads(BASELINES_PATH.read_text(encoding="utf-8"))
+        profiles = payload.get("servers", {}).get(str(server_id))
+        return profiles if isinstance(profiles, list) else None
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def read_metric_values(server_id, canonical):
-    """Read every valid value for one metric/server without changing the source CSV."""
+    """Read raw metric values only as a development fallback; deployed mode uses precomputed profiles."""
     if not TELEMETRY_PATH.exists():
         return []
     values=[]
