@@ -13,3 +13,5 @@ output/
 # Keep the multi-GB raw telemetry local. Commit only the precomputed baseline JSON.
 data/unified_server_telemetry.csv
 data/telemetry_1min.csv
+
+data/telemetry_1min.csv
