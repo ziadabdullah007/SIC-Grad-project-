@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .settings import settings
 from .servers import public_servers, SERVERS
 from .schemas import AnalyzeRequest, ScenarioRequest
-from .analysis import analyze
+from .analysis import analyze, threshold_catalog
 from .data_service import telemetry_available, telemetry_summary
 from .reporting import make_report, llm_status
 
@@ -19,6 +19,13 @@ def get_llm_status(): return llm_status()
 
 @app.get("/api/servers")
 def get_servers(): return public_servers()
+
+@app.get("/api/servers/{server_id}/thresholds")
+def get_server_thresholds(server_id: str):
+    try:
+        return threshold_catalog(server_id)
+    except ValueError as exc:
+        raise HTTPException(404, detail=str(exc)) from exc
 
 @app.get("/api/servers/{server_id}/telemetry")
 def get_server_telemetry(server_id:str, limit:int=200):

@@ -19,3 +19,7 @@
 .comparison-table th, .comparison-table td { padding: 11px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border, #263448); }
 .comparison-table th { background: rgba(120,150,190,.08); color: var(--muted, #9aabc1); font-weight: 600; }
 .comparison-table tr:last-child td { border-bottom: 0; }
+
+.threshold-panel { margin: 18px 0 20px; padding: 14px; border: 1px solid #2a3d55; border-radius: 10px; background: #0d1928; }
+.threshold-panel .section-heading { margin-top: 0; }
+.threshold-table { min-width: 850px; }

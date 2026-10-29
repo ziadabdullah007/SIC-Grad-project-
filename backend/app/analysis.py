@@ -138,3 +138,37 @@ def analyze(scenario, overrides=None):
     unconfigured=[k for k,v in th.items() if v is None]
     limitations=["No ML model is used for risk classification; findings come from documented hardware limits and precomputed historical baselines.","GPU power limits are manufacturer specifications for the assumed SKU/form factor; actual device-enforced limits may differ. The 90% power warning point is explicitly an engineering estimate, not a manufacturer-published warning band.","GPU temperature warning/critical limits are only applied when device-reported operating/slowdown/shutdown fields are present and sensor semantics match.","Historical averages and P10–P90 ranges describe observed normal behavior; P1/P99 are not used to label warning or critical.","Where a manufacturer publishes only a maximum/capacity and no warning band, the application reports that limit without inventing a vendor warning threshold.","The What-if scenario is evaluated as a snapshot; changing one slider does not physically simulate how other metrics respond.","This system does not predict failures or time-to-failure."]
     return {"server_id":sid,"server_name":server["name"],"overall_status":overall,"threshold_breaches":breaches,"findings":findings,"comparisons":comparisons,"data_driven_thresholds":data_profiles,"data_rule_results":data_rule_results,"baseline_method":"Per-server historical distribution: average and normal=P10–P90 only. Critical severity uses applicable manufacturer limits; power warning at 90% of vendor maximum is explicitly an engineering estimate. Requires at least 10 valid historical samples per metric.","spec_sources":server["spec_sources"],"configuration_notes":server.get("configuration_notes",[]),"thresholds":th,"unconfigured_thresholds":unconfigured,"limitations":limitations}
+
+
+def threshold_catalog(server_id):
+    """Return server-specific Normal/Warning/Critical thresholds with provenance.
+
+    Missing thresholds stay null rather than being fabricated. Normal ranges are
+    descriptive historical P10-P90; warning estimates are explicitly labelled.
+    """
+    if server_id not in SERVERS:
+        raise ValueError(f"Unknown server_id: {server_id}")
+    server = SERVERS[server_id]
+    profiles = data_driven_thresholds(server_id) or []
+    by_metric = {p.get("metric"): p for p in profiles}
+    power_source = next((x for x in server["spec_sources"] if "power" in x.get("supports", "").lower() or "tdp" in x.get("supports", "").lower()), server["spec_sources"][0])
+    memory_source = next((x for x in server["spec_sources"] if "memory" in x.get("supports", "").lower()), server["spec_sources"][0])
+    power_max = server["gpu_count"] * server["gpu_power_limit_per_gpu_W"]
+    memory_max = server["gpu_count"] * server["gpu_memory_per_gpu_GB"] * 1024
+    rows = []
+    for metric, (label, unit, direction) in DATA_METRICS.items():
+        p = by_metric.get(metric, {})
+        rows.append({
+            "metric": metric, "label": label, "unit": unit,
+            "normal": {"min": p.get("normal_min"), "max": p.get("normal_max"), "average": p.get("average"), "source_type": "historical_P10_P90", "source": "processed_baselines.json" if p else None, "confidence": "historical" if p else "unavailable"},
+            "warning": {"value": None, "source_type": "not_configured", "source": None, "confidence": "unavailable"},
+            "critical": {"value": None, "source_type": "not_configured", "source": None, "confidence": "unavailable"},
+        })
+    lookup = {r["metric"]: r for r in rows}
+    power = lookup["gpu_power_total_W"]
+    power["warning"] = {"value": round(power_max * 0.9, 3), "source_type": "engineering_estimate_90pct_vendor_max", "source": power_source, "confidence": "estimate"}
+    power["critical"] = {"value": power_max, "source_type": "manufacturer_max_power_assumed_sku", "source": power_source, "confidence": "vendor_spec_for_assumed_platform"}
+    memory = lookup["gpu_memory_used_total_MB"]
+    memory["warning"] = {"value": round(memory_max * 0.9, 3), "source_type": "application_advisory_90pct_capacity", "source": {"title": "Project advisory policy (not manufacturer limit)", "url": "", "supports": "90% aggregate nominal memory is a configurable application advisory."}, "confidence": "project_policy"}
+    memory["critical"] = {"value": memory_max, "source_type": "manufacturer_nominal_capacity_assumed_sku", "source": memory_source, "confidence": "vendor_spec_for_assumed_platform"}
+    return {"server_id": server_id, "server_name": server["name"], "gpu_model": server["gpu_model"], "gpu_count": server["gpu_count"], "thresholds": rows, "notes": ["Normal is a descriptive historical P10-P90 range, not a safety limit.", "Warning and critical thresholds are metric-specific; unverified thresholds remain unconfigured.", "Power warning at 90% is a project engineering estimate, not a manufacturer-published warning threshold.", "Catalog specifications depend on the assumed SKU/platform; verify the exact server configuration."]}
