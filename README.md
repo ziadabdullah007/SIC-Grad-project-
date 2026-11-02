@@ -1,80 +1,134 @@
+# Real-Time AI Server Telemetry: Streaming Data Processing & Analytics
+
+**An End-to-End Big Data Engineering Platform for GPU Infrastructure Monitoring and Analytics**
+
+**Samsung Innovation Campus – Big Data Course**
+
+---
+
+## 1. Project Overview
+
+An end-to-end Data Engineering project designed to help enterprises evaluate GPU server configurations for AI image-generation workloads.
+
+The platform combines real-time streaming and batch processing to ingest, transform, validate, and analyze server telemetry data, providing insights into resource utilization, power efficiency, thermal behavior, and infrastructure costs.
+
+It also includes **DC Risk Lab**, an interactive platform that extends the project's analytical capabilities through server exploration, risk assessment, what-if simulation, and LLM-powered explanations.
+
+## 2. Business Problem & Objectives
+
+An enterprise needs to identify the most suitable GPU server configurations for deploying an AI image-generation application.
+
+The project analyzes operational telemetry to compare five GPU configurations and support informed infrastructure selection decisions.
+
+**Main Objectives:**
+- Build a streaming and batch data processing platform.
+- Process and analyze over 2 million telemetry records.
+- Implement data quality and validation.
+- Design a Star Schema Data Warehouse.
+- Develop interactive dashboards and infrastructure analytics tools.
+- Identify promising server configurations for deployment evaluation.
+
+## 3. Dataset Overview
+
+- **Records:** 2,000,000
+- **Columns:** 26
+- **GPU Configurations:** 5
+- **Observation Period:** 278 days
+
+| Server ID | GPU Configuration |
+|---|---|
+| S001 | NVIDIA A100 |
+| S002 | NVIDIA L40S |
+| S003 | AMD MI300X |
+| S004 | NVIDIA H100 |
+| S005 | NVIDIA B200 |
+
+Telemetry metrics include GPU and CPU utilization, memory usage, power consumption, temperature, and cooling-related measurements.
+
+## 4. System Architecture
+
+<img width="1280" height="640" alt="WhatsApp Image 2026-10-29 at 15 08 07" src="https://github.com/user-attachments/assets/7a29af32-783d-4c8a-940f-78be37da9842" />
 
 
-## Historical Normal ranges and hardware rules
+The solution integrates cloud-based ingestion, streaming and batch processing, layered data storage, data warehousing, and business intelligence.
 
-The original multi-GB `unified_server_telemetry.csv` is used locally only. Run the preprocessing script once to calculate per-server, per-metric sample counts, averages, medians, and P10-P90 from all valid numeric readings. Only `data/processed_baselines.json` is deployed. Timestamps and row-level readings are not used by the deployed application.
+## 5. Technologies Used
 
-P10-P90 describes historical normal behavior only; being outside that range is not automatically a Warning or Critical event. Warning/Critical checks use applicable documented hardware specifications. Where a manufacturer publishes a maximum but no warning band, any project estimate is explicitly labelled as an estimate, not a vendor limit. Unknown thermal limits remain unevaluated rather than using invented universal temperatures.
+| Category | Technologies |
+|---|---|
+| Programming | Python, SQL |
+| Data Ingestion | Azure Event Hubs |
+| Cloud Storage | Azure Data Lake Storage Gen2 |
+| Storage Formats | Parquet, Delta Lake |
+| Stream Processing | Apache Spark Structured Streaming, Kafka Connector |
+| Data Processing | PySpark, Spark SQL |
+| Data Platform | Microsoft Fabric |
+| Data Warehousing | Star Schema, Fabric Warehouse |
+| Automation & Streaming Analytics | Fabric Data Pipelines, Eventstream, Eventhouse, KQL |
+| Visualization | Power BI, DAX |
+| Application | Python Backend, Web Frontend |
+| AI Integration | Large Language Models (LLMs) |
+| Deployment | Render |
 
-## Prepare the historical baselines locally
+## 6. Key Deliverables
 
-Place the raw CSV at `data/unified_server_telemetry.csv` on your own machine. It is git-ignored and should not be committed. From the repository root run:
+### Data Engineering Pipeline
 
-```powershell
-python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output data/processed_baselines.json
-```
+- Python-based telemetry producer.
+- Azure Event Hubs for streaming ingestion.
+- ADLS Gen2 Bronze storage.
+- Streaming and batch processing.
+- Data validation, duplicate handling, and Dead Letter Queue (DLQ).
+- Lakehouse architecture with Bronze, Silver, and Gold layers.
+- Star Schema Data Warehouse.
 
-The script processes every valid numeric reading, prints progress, and creates only `processed_baselines.json`. It deliberately does not produce a minute-level series or preserve timestamps. Commit the generated JSON after checking its size; do not commit the raw CSV. The deployed backend requires the JSON and does not read or need the raw CSV at runtime.
+### Power BI Dashboard
 
-If the JSON is missing, historical ranges will be unavailable; the application will not silently calculate them from made-up values or require the raw CSV on Render.
+Four analytical pages:
 
-## Run the local LLM (Ollama) or OpenAI
+- Overview
+- Efficiency & Power
+- Thermal & Cooling
+- AI Workload
 
-### Option A — local LLM with Ollama (no API key)
+### DC Risk Lab – Interactive Platform
 
-1. Install Ollama from `https://ollama.com/download` and keep it running.
-2. In a terminal, download a model: `ollama pull qwen2.5:7b`. This model can need several GB of RAM; use a smaller model such as `qwen2.5:3b` if your computer is limited, and set `OLLAMA_MODEL=qwen2.5:3b` in `.env`.
-3. Copy `backend/.env.example` to `backend/.env` and set `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://localhost:11434`, and the model name.
-4. Start the backend from the `backend` directory so its `.env` is loaded:
-   - Windows PowerShell: `py -m venv .venv`, then `.venv\\Scripts\\Activate.ps1`, `pip install -r requirements.txt`, `uvicorn app.main:app --reload --port 8000`.
-   - macOS/Linux: `python -m venv .venv`, `source .venv/bin/activate`, `pip install -r requirements.txt`, `uvicorn app.main:app --reload --port 8000`.
-5. Open `http://localhost:8000/api/llm/status`. Run analysis in the UI with **Generate LLM narrative** checked. The report source should show `ollama_llm` when successful.
+An interactive Data Center Intelligence Platform developed as an extension of the main project.
 
-### Option B — OpenAI-compatible hosted API (including providers with a free tier)
+**Key Features:**
+- **Server Explorer:** Explore GPU server configurations and historical telemetry.
+- **What-if Simulator:** Evaluate hypothetical operating scenarios.
+- **Risk Assessment:** Identify potential operational risks using historical baselines and hardware specifications.
+- **AI Risk Analyst:** Generate LLM-powered explanations based on analytical findings.
+- **Reports:** Access structured analytical reports.
 
-The backend supports an OpenAI-compatible Chat Completions endpoint. For example, if your account currently has access to the Groq free tier, set these environment variables locally or in Render:
+**Access the Platform:** [DC Risk Lab](https://sic-grad-project-1.onrender.com/)
 
-- `LLM_PROVIDER=openai`
-- `OPENAI_API_KEY` = your provider API key (keep it secret; never commit it)
-- `OPENAI_BASE_URL=https://api.groq.com/openai/v1`
-- `OPENAI_MODEL` = a currently available chat model in your provider account
+*Note: DC Risk Lab uses historical telemetry baselines, documented hardware rules, rule-based analytics, and LLM-generated explanations. It does not use a trained ML model or produce hardware failure probabilities. What-if scenarios are analytical evaluations, not physical hardware simulations.*
 
-Free tiers have changing rate limits/model availability and are not guaranteed unlimited. `GET /api/llm/status` checks configuration only; run an analysis and verify `report_source` is `openai_llm` to confirm a successful real model call. A `deterministic_template (...)` source means the provider call did not produce the report.
+## 7. Key Findings & Recommendations
 
-For OpenAI itself, leave `OPENAI_BASE_URL` blank and set a supported model; API usage may incur charges.
+The analysis highlighted differences across the five GPU configurations in resource utilization, power efficiency, thermal behavior, and infrastructure costs.
 
-### Run the frontend
+Two configurations were shortlisted for further consideration:
 
-In a second terminal: `cd frontend`, `npm install`, `npm run dev`, then open `http://localhost:5173`.
+- **S002 – NVIDIA L40S:** A cost-conscious candidate with promising observed power-efficiency characteristics.
+- **S005 – NVIDIA B200:** A higher-cost configuration with higher observed average GPU utilization.
 
-### Docker note
+Further benchmarking under comparable AI workload conditions is recommended before making the final deployment decision.
 
-For Docker, `localhost:11434` inside the backend container points to the container itself, not your host. Configure `OLLAMA_BASE_URL` to the host address reachable from the container (often `http://host.docker.internal:11434` on Docker Desktop), or use the OpenAI provider. The API falls back to an evidence-based deterministic report if the selected LLM is unavailable; check `report_source` to see which mode generated the report.
+## 8. Documentation & Acknowledgments
 
-## What the LLM does (and does not do)
+For detailed implementation steps, architecture explanations, data processing workflows, and analytical results, refer to the project's documentation.
 
-The backend loads precomputed historical statistics and applies manufacturer/catalog rules first. The LLM receives that structured evidence and writes an explanation; it does not calculate authoritative thresholds, change source data, or diagnose a hardware failure. If the API/model is unavailable, the application still returns a deterministic report and labels the report source accordingly.
+Developed as part of the **Samsung Innovation Campus Big Data Course**.
 
-## Deploy to Render (GitHub repository)
+Special thanks to our instructor, facilitators, organizers, and teammates for their guidance, support, and collaboration.
 
-A starter `render.yaml` is included for the API and frontend. Before deploying:
+---
 
-1. Generate `data/processed_baselines.json` locally and commit that JSON only. Do not commit the raw CSV.
-2. Push the repository to GitHub and create a new Render Blueprint from that repository.
-3. In the API service environment, set `OPENAI_API_KEY` to your provider's key. Never put the real key in GitHub or `render.yaml`. If Render assigns a different frontend/backend hostname, update `CORS_ORIGINS` on the API and `VITE_API_BASE_URL` on the static site to match. `VITE_API_BASE_URL` is read at build time, so trigger a frontend redeploy after changing it.
-4. Confirm `https://<api-host>/health` reports `historical_baselines_available: true`, then check `/api/llm/status`. That endpoint confirms configuration only; run an analysis and confirm `report_source` is `openai_llm` to prove the provider call succeeded.
-5. Free-tier LLM quotas and Render service limits can change. If the provider is unavailable, `report_source` explicitly identifies the deterministic fallback.
+**Project:** Real-Time AI Server Telemetry: Streaming Data Processing & Analytics
 
-The `90% of vendor maximum` GPU power warning is an engineering estimate, not an official vendor warning threshold. Critical power status is reserved for exceeding the catalogued manufacturer maximum. Generic GPU temperature is not assigned invented universal limits; exact vendor/device telemetry is required. Historical Normal remains per-server P10–P90.
+**Program:** Samsung Innovation Campus – Big Data Course
 
-## Prepare telemetry for deployment without committing the raw CSV
-
-The multi-GB `data/unified_server_telemetry.csv` is a local input and is git-ignored. Before deploying, run from the repository root:
-
-```bash
-python backend/scripts/precompute_telemetry.py --input data/unified_server_telemetry.csv --output-dir data
-```
-
-This produces `data/processed_baselines.json` (historical statistics computed from the full-resolution data for each server and metric) and `data/processed_baselines.json` (one-minute timestamped averages for trend analysis). Commit these compact artifacts, not the raw CSV. When both artifacts are present, the backend uses them at runtime and does not need the raw file. The minute-level series is for trend analysis; baseline quantiles are calculated from all valid raw rows. Check the generated files' sizes before pushing to GitHub.
-
-Historical Normal ranges use average and P10–P90. Warning/Critical classifications remain separate and require vendor-documented limits or clearly labeled project engineering estimates; missing vendor thresholds must remain unevaluated rather than invented.
+**Interactive Platform:** [DC Risk Lab](https://sic-grad-project-1.onrender.com/)
